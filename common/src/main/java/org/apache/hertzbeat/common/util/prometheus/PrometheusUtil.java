@@ -30,7 +30,7 @@ import java.util.List;
  */
 public class PrometheusUtil {
 
-    //An unknown format occurred during parsing because parsing cannot continue
+    // An unknown format occurred during parsing because parsing cannot continue
     // or the end of the input stream has been reached
     private static final int ERROR_FORMAT = -1;
 
@@ -39,7 +39,9 @@ public class PrometheusUtil {
 
     private static final int COMMENT_LINE = -3;
 
+    private static final String HELP_PREFIX = "HELP";
 
+    private static final String TYPE_PREFIX = "TYPE";
     private static int parseMetricName(InputStream inputStream, Metric.MetricBuilder metricBuilder) throws IOException {
         StringBuilder stringBuilder = new StringBuilder();
         int i;
@@ -218,10 +220,60 @@ public class PrometheusUtil {
 
     }
 
-    private static int skipCommentLine(InputStream inputStream) throws IOException {
+    private static int skipCommentLine(InputStream inputStream, MetricFamily.MetricType metricType, String help) throws IOException {
+        // skip space after '#'
         int i = inputStream.read();
-        while (i != -1 && i != '\n') {
+
+        // parse prefix
+        StringBuilder stringBuilder = new StringBuilder();
+        Boolean isHelp = false, isType = false;
+        while (i != ' ' && i != -1 && i != '\n') {
+            stringBuilder.append((char) i);
             i = inputStream.read();
+        }
+        if (i == -1){
+            return NORMAL_END;
+        }
+        else if (i == '\n'){
+            return i;
+        }
+        else {
+            if (HELP_PREFIX.contentEquals(stringBuilder)) {
+                isHelp = true;
+            }
+            else if (TYPE_PREFIX.contentEquals(stringBuilder)) {
+                isType = true;
+            }
+            // need to read remaining chars
+        }
+
+        // read next one char;
+        i = inputStream.read();
+        // skip metricName
+        while (i != ' ' && i != -1 && i != '\n') {
+            i = inputStream.read();
+        }
+        if (i == -1){
+            return NORMAL_END;
+        }
+        else if (i == '\n'){
+            return i;
+        }
+        // if i == ' ', continue to read.
+
+        // read help or type
+        stringBuilder.setLength(0);
+        i = inputStream.read();
+        while (i != -1 && i != '\n') { // do not stop when i == ' ' this time
+            stringBuilder.append((char) i);
+            i = inputStream.read();
+        }
+        String str = stringBuilder.toString();
+        if (isHelp) {
+            help = str;
+        }
+        else if (isType) {
+            metricType = MetricFamily.MetricType.getType(str);
         }
         if (i == -1) {
             return NORMAL_END;
@@ -232,14 +284,18 @@ public class PrometheusUtil {
     public static List<Metric> parseMetrics(InputStream inputStream) throws IOException {
         List<Metric> metricList = new ArrayList<>();
         int i = parseMetric(inputStream, metricList);
+        MetricFamily.MetricType metricType = null;
+        String help = null;
         while (i == '\n' || i == COMMENT_LINE) {
             if (i == COMMENT_LINE) {
-                if (skipCommentLine(inputStream) == NORMAL_END) {
+                if (skipCommentLine(inputStream, metricType, help) == NORMAL_END) {
                     return metricList;
                 }
 
             }
             i = parseMetric(inputStream, metricList);
+            metricType = null;
+            help = null;
         }
         if (i == NORMAL_END) {
             return metricList;

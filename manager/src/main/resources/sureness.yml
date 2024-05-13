@@ -23,7 +23,7 @@ resourceRole:
   - /api/account/auth/refresh===post===[admin,user,guest]
   - /api/apps/**===get===[admin,user,guest]
   - /api/monitor/**===get===[admin,user,guest]
-  - /api/monitor/**===post===[admin,user]
+#  - /api/monitor/**===post===[admin,user]
   - /api/monitor/**===put===[admin,user]
   - /api/monitor/**===delete==[admin]
   - /api/monitors/**===get===[admin,user,guest]
@@ -67,6 +67,7 @@ excludedResource:
   - /api/i18n/**===get
   - /api/apps/hierarchy===get
   - /api/push/**===*
+  - /api/monitor/**===post
   - /api/status/page/public/**===*
   # web ui 前端静态资源
   - /===get

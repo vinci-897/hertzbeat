@@ -25,7 +25,13 @@ import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hertzbeat.common.util.prometheus.Metric;
 import org.apache.hertzbeat.common.util.prometheus.PrometheusUtil;
+import org.apache.hertzbeat.push.dao.PushMonitorDao;
 import org.apache.hertzbeat.push.service.PushGatewayService;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -36,9 +42,25 @@ import org.springframework.stereotype.Service;
 @Service
 public class PushGatewayServiceImpl implements PushGatewayService {
 
+    @Autowired
+    private PushMonitorDao monitorDao;
+
+
     @Override
     public boolean pushMetricsData(InputStream inputStream) throws IOException {
         List<Metric> metrics = PrometheusUtil.parseMetrics(inputStream);
+        addMonitor();
         return metrics != null;
+    }
+
+    private void addMonitor() throws IOException {
+
+        CloseableHttpClient httpclient = HttpClients.createDefault();
+        HttpPost httpPost = new HttpPost("http://baidu.com");
+        CloseableHttpResponse response = httpclient.execute(httpPost);
+        System.out.println(response);
+
+        //todo: query cache
+
     }
 }

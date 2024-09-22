@@ -19,51 +19,169 @@
 
 package org.apache.hertzbeat.common.util.prometheus;
 
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.common.protocol.types.Field;
+import org.eclipse.persistence.internal.sessions.DirectCollectionChangeRecord;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * prometheus metric sparser
  */
-public final class PrometheusUtil {
+@Slf4j
+public class PrometheusUtil {
 
-    //An unknown format occurred during parsing because parsing cannot continue
+    // An unknown format occurred during parsing because parsing cannot continue
     // or the end of the input stream has been reached
-    private static final int ERROR_FORMAT = -1;
+//    private static final int WRONG_FORMAT = -1;
 
     //The input stream ends normally
-    private static final int NORMAL_END = -2;
+//    private static final int NORMAL_END = -2;
 
-    private static final int COMMENT_LINE = -3;
+//    private static final int COMMENT_LINE = -3;
 
-    private PrometheusUtil() {
+    private static final String HELP_PREFIX = "HELP";
+
+    private static final String TYPE_PREFIX = "TYPE";
+
+    private static class FormatException extends Exception {
+        public FormatException() {}
+        public FormatException(String message) {
+            super(message);
+        }
     }
 
-    private static int parseMetricName(InputStream inputStream, Metric.MetricBuilder metricBuilder) throws IOException {
-        StringBuilder stringBuilder = new StringBuilder();
+    private static class CharChecker {
         int i;
-        i = inputStream.read();
-        if (i == -1) {
-            return NORMAL_END;
+        boolean satisfied;
+        CharChecker(int i) {
+            this.i = i;
+            this.satisfied = false;
         }
-        else if (i == '#') {
-            return COMMENT_LINE;
+//        private CharChecker NotEOF() throws FormatException {
+//            if (i == -1) {
+//                throw new FormatException();
+//            }
+//            return this;
+//        }
+//        private CharChecker NotEOL() throws FormatException {
+//            if (i == '\n') {
+//                throw new FormatException();
+//            }
+//            return this;
+//        }
+        private CharChecker MaybeLeftBracket() {
+            if (i == '{') {
+                satisfied = true;
+            }
+            return this;
         }
 
-        while (i != -1) {
-            if (i == ' ' || i == '{') {
-                metricBuilder.metricName(stringBuilder.toString());
-                return i;
+        private CharChecker MaybeRightBracket() {
+            if (i == '}') {
+                satisfied = true;
             }
+            return this;
+        }
+
+        private CharChecker MaybeEqualsSign() {
+            if (i == '=') {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private CharChecker MaybeQuotationMark() {
+            if (i == '"') {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private CharChecker MaybeSpace() {
+            if (i == ' ') {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private CharChecker MaybeComma() {
+            if (i == ',') {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private CharChecker MaybeEOF() {
+            if (i == -1) {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private CharChecker MaybeEOL() {
+            if (i == '\n') {
+                satisfied = true;
+            }
+            return this;
+        }
+
+        private int NoElse() throws FormatException {
+            if (!satisfied) {
+                throw new FormatException();
+            }
+            return this.i;
+        }
+
+    }
+
+    private static CharChecker parseOneChar(InputStream inputStream) throws IOException {
+        int i = inputStream.read();
+        return new CharChecker(i);
+    }
+
+    private static CharChecker parseOneWord(InputStream inputStream, StringBuilder stringBuilder) throws IOException {
+        int i = inputStream.read();
+        while ((i >= 'a' && i <= 'z') || (i >= 'A' && i <= 'Z') || (i >= '0' && i <= '9') || i == '_' || i == ':') {
             stringBuilder.append((char) i);
             i = inputStream.read();
         }
-
-        return ERROR_FORMAT;
+        return new CharChecker(i);
     }
+    private static CharChecker parseUntilEnd(InputStream inputStream, StringBuilder stringBuilder) throws IOException {
+        int i = inputStream.read();
+        while (i != '\n' && i != -1) {
+            stringBuilder.append((char) i);
+            i = inputStream.read();
+        }
+        return new CharChecker(i);
+    }
+
+    private static Double parseDouble(String string) throws FormatException {
+        switch (string) {
+            case "+Inf":
+                return Double.POSITIVE_INFINITY;
+            case "-Inf":
+                return Double.NEGATIVE_INFINITY;
+            default:
+                try {
+                    BigDecimal bigDecimal = new BigDecimal(string);
+                    return bigDecimal.doubleValue();
+                } catch (NumberFormatException e) {
+                    throw new FormatException();
+                }
+        }
+    }
+
+
 
     private static int parseLabel(InputStream inputStream, List<Label> labelList) throws IOException {
         Label.LabelBuilder labelBuilder = new Label.LabelBuilder();
@@ -76,12 +194,12 @@ public final class PrometheusUtil {
             i = inputStream.read();
         }
         if (i == -1) {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
         labelBuilder.name(labelName.toString());
 
         if (inputStream.read() != '\"') {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
 
         StringBuilder labelValue = new StringBuilder();
@@ -91,12 +209,12 @@ public final class PrometheusUtil {
             i = inputStream.read();
         }
         if (i == -1 || labelValue.charAt(labelValue.length() - 1) != '\"') {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
 
         // skip space only in this condition
         if (i == '}' && inputStream.read() != ' ') {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
 
         labelValue.deleteCharAt(labelValue.length() - 1);
@@ -115,7 +233,7 @@ public final class PrometheusUtil {
             i = parseLabel(inputStream, labelList);
         }
         if (i == -1) {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
 
         metricBuilder.labelList(labelList);
@@ -135,21 +253,18 @@ public final class PrometheusUtil {
         String string = stringBuilder.toString();
 
         switch (string) {
-            case "NaN":
-                metricBuilder.value(Double.NaN);
-                break;
             case "+Inf":
-                metricBuilder.value(Double.POSITIVE_INFINITY);
+                return Double.POSITIVE_INFINITY;
                 break;
             case "-Inf":
-                metricBuilder.value(Double.NEGATIVE_INFINITY);
+                return Double.NEGATIVE_INFINITY);
                 break;
             default:
                 try {
                     BigDecimal bigDecimal = new BigDecimal(string);
                     metricBuilder.value(bigDecimal.doubleValue());
                 } catch (NumberFormatException e) {
-                    return ERROR_FORMAT;
+                    return WRONG_FORMAT;
                 }
                 break;
         }
@@ -176,7 +291,7 @@ public final class PrometheusUtil {
         try {
             metricBuilder.timestamp(Long.parseLong(string));
         } catch (NumberFormatException e) {
-            return ERROR_FORMAT;
+            return WRONG_FORMAT;
         }
 
         if (i == -1) {
@@ -186,22 +301,37 @@ public final class PrometheusUtil {
             return i; // '\n'
         }
     }
+    private static int parseMetricName(InputStream inputStream, StringBuilder stringBuilder) throws IOException {
+        int i = inputStream.read();
+        while (i != '{') {
+            stringBuilder.append((char) i);
+            i = inputStream.read();
+        }
 
+        while (i != -1) {
+            if (i == ' ' || i == '{') {
+                metricBuilder.metricName(stringBuilder.toString());
+                return i;
+            }
+            stringBuilder.append((char) i);
+            i = inputStream.read();
+        }
+
+        return WRONG_FORMAT;
+    }
     // return value:
     // -1: error format
     // -2: normal end
     // '\n': more lines
-    private static int parseMetric(InputStream inputStream, List<Metric> metrics) throws IOException {
-        Metric.MetricBuilder metricBuilder = new Metric.MetricBuilder();
-
-        int i = parseMetricName(inputStream, metricBuilder); // RET: -1, -2, -3, '{', ' '
-        if (i == ERROR_FORMAT || i == NORMAL_END || i == COMMENT_LINE) {
+    private static void parseMetric(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException {
+        int i = parseMetricName(inputStream, stringBuilder); // RET: -1, -2, -3, '{', ' '
+        if (i == WRONG_FORMAT || i == NORMAL_END || i == COMMENT_LINE) {
             return i;
         }
 
         if (i == '{') {
             i = parseLabelList(inputStream, metricBuilder); // RET: -1, '}'
-            if (i == ERROR_FORMAT) {
+            if (i == WRONG_FORMAT) {
                 return i;
             }
         }
@@ -220,35 +350,146 @@ public final class PrometheusUtil {
 
     }
 
-    private static int skipCommentLine(InputStream inputStream) throws IOException {
-        int i = inputStream.read();
-        while (i != -1 && i != '\n') {
-            i = inputStream.read();
+
+    private static List<MetricFamily.Label> parseLabel(InputStream inputStream, StringBuilder stringBuilder) throws IOException, FormatException {
+        List<MetricFamily.Label> labelList = new ArrayList<>();
+        int i;
+        while (true) {
+            MetricFamily.Label label = new MetricFamily.Label();
+            parseOneWord(inputStream, stringBuilder).MaybeEqualsSign().NoElse();
+            label.setName(stringBuilder.toString());
+            stringBuilder.delete(0, stringBuilder.length());
+
+            parseOneChar(inputStream).MaybeQuotationMark().NoElse();
+
+            parseOneWord(inputStream, stringBuilder).MaybeQuotationMark().NoElse();
+            label.setValue(stringBuilder.toString());
+            stringBuilder.delete(0, stringBuilder.length());
+
+            parseOneChar(inputStream).MaybeQuotationMark().NoElse();
+
+            i = parseOneChar(inputStream).MaybeComma().MaybeRightBracket().NoElse();
+            labelList.add(label);
+            if (i == '}') {
+                break;
+            }
         }
-        if (i == -1) {
-            return NORMAL_END;
-        }
-        return i;
+        return labelList;
     }
 
-    public static List<Metric> parseMetrics(InputStream inputStream) throws IOException {
-        List<Metric> metricList = new ArrayList<>();
-        int i = parseMetric(inputStream, metricList);
-        while (i == '\n' || i == COMMENT_LINE) {
-            if (i == COMMENT_LINE) {
-                if (skipCommentLine(inputStream) == NORMAL_END) {
-                    return metricList;
-                }
+    private static void parse_summary(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
 
+    }
+
+    private static void parse_counter(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
+        MetricFamily.Metric metric = new MetricFamily.Metric();
+        int i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeLeftBracket().NoElse();
+        stringBuilder.delete(0, stringBuilder.length());
+
+        if (i == '{') {
+            metric.setLabelPair(parseLabel(inputStream, stringBuilder));
+        }
+        parseOneChar(inputStream).MaybeSpace().NoElse();
+
+        MetricFamily.Counter counter = new MetricFamily.Counter();
+        i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeEOL().NoElse();
+        counter.setValue(parseDouble(stringBuilder.toString()));
+        stringBuilder.delete(0, stringBuilder.length());
+        metric.setCounter(counter);
+
+        if (i == ' ') {
+            parseOneWord(inputStream, stringBuilder).MaybeEOL().NoElse();
+            metric.setTimestampMs(Long.parseLong(stringBuilder.toString()));
+        }
+
+        metricFamily.getMetricList().add(metric);
+    }
+
+
+    private static void parse_gauge(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
+        MetricFamily.Metric metric = new MetricFamily.Metric();
+        int i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeLeftBracket().NoElse();
+        stringBuilder.delete(0, stringBuilder.length());
+
+        if (i == '{') {
+            metric.setLabelPair(parseLabel(inputStream, stringBuilder));
+        }
+        parseOneChar(inputStream).MaybeSpace().NoElse();
+
+        MetricFamily.Gauge gauge = new MetricFamily.Gauge();
+        i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeEOL().NoElse();
+        gauge.setValue(parseDouble(stringBuilder.toString()));
+        stringBuilder.delete(0, stringBuilder.length());
+        metric.setGauge(gauge);
+
+        if (i == ' ') {
+            parseOneWord(inputStream, stringBuilder).MaybeEOL().NoElse();
+            metric.setTimestampMs(Long.parseLong(stringBuilder.toString()));
+        }
+
+        metricFamily.getMetricList().add(metric);
+
+    }
+
+    private static void parse_histogram(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
+
+    }
+
+    private static void parseCommentLine(InputStream inputStream, MetricFamily metricFamily) throws IOException, FormatException {
+        // skip space after '#'
+        int i = inputStream.read();
+        if (i != ' ') {
+            throw new FormatException();
+        }
+
+        // parse prefix
+        StringBuilder stringBuilderPrefix = new StringBuilder();
+        parseOneWord(inputStream, stringBuilderPrefix).MaybeSpace().NoElse();
+        StringBuilder stringBuilderName = new StringBuilder();
+        parseOneWord(inputStream, stringBuilderName).MaybeSpace().NoElse();
+        metricFamily.setName(stringBuilderName.toString());
+        if (HELP_PREFIX.contentEquals(stringBuilderPrefix)) {
+            stringBuilderPrefix.setLength(0);
+            parseUntilEnd(inputStream, stringBuilderPrefix).MaybeEOL().NoElse();
+            metricFamily.setHelp(stringBuilderPrefix.toString());
+        }
+        else if (TYPE_PREFIX.contentEquals(stringBuilderPrefix)) {
+            stringBuilderPrefix.setLength(0);
+            parseOneWord(inputStream, stringBuilderPrefix).MaybeEOL().NoElse();
+            MetricFamily.MetricType type = MetricFamily.MetricType.getType(stringBuilderPrefix.toString());
+            if (type != null) {
+                metricFamily.setMetricType(type);
             }
-            i = parseMetric(inputStream, metricList);
+            else {
+                throw new FormatException();
+            }
         }
-        if (i == NORMAL_END) {
-            return metricList;
-        }
-        else {
+    }
+
+    public static Map<String, MetricFamily> parseMetrics(InputStream inputStream) throws IOException {
+        Map<String, MetricFamily> metricFamilyMap = new ConcurrentHashMap<>(10);
+        MetricFamily metricFamily = null;
+        int i = inputStream.read();
+        try {
+            while (i != -1) {
+                if (i == '#') {
+                    metricFamily = new MetricFamily();
+                    metricFamily.setMetricList(new ArrayList<>());
+                    parseCommentLine(inputStream, metricFamily);
+                } else {
+                    StringBuilder stringBuilder = new StringBuilder();
+                    stringBuilder.append((char) i);
+                    PrometheusUtil.class.getMethod("parse_" + metricFamily.getMetricType().getValue(),
+                            InputStream.class, MetricFamily.class, StringBuilder.class)
+                            .invoke(null, inputStream, metricFamily, stringBuilder);
+                }
+                i = inputStream.read();
+            }
+        } catch (FormatException | NoSuchMethodException | InvocationTargetException | IllegalAccessException | NullPointerException e) {
+            log.error("prometheus parser failed because of wrong input format. {}", e.getMessage());
             return null;
         }
+        return metricFamilyMap;
     }
 
 

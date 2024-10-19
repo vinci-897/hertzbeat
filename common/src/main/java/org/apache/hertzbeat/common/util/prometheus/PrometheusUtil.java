@@ -378,7 +378,49 @@ public class PrometheusUtil {
     }
 
     private static void parse_summary(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
+        MetricFamily.Metric metric = new MetricFamily.Metric();
+        int i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeLeftBracket().NoElse();
+        stringBuilder.delete(0, stringBuilder.length());
 
+        List<MetricFamily.Label> labelList = new ArrayList<>();
+        if (i == '{') {
+            while (true) {
+                MetricFamily.Label label = new MetricFamily.Label();
+                parseOneWord(inputStream, stringBuilder).MaybeEqualsSign().NoElse();
+                String labelName = stringBuilder.toString();
+                if ()
+                label.setName(stringBuilder.toString());
+                stringBuilder.delete(0, stringBuilder.length());
+
+                parseOneChar(inputStream).MaybeQuotationMark().NoElse();
+
+                parseOneWord(inputStream, stringBuilder).MaybeQuotationMark().NoElse();
+                label.setValue(stringBuilder.toString());
+                stringBuilder.delete(0, stringBuilder.length());
+
+                parseOneChar(inputStream).MaybeQuotationMark().NoElse();
+
+                i = parseOneChar(inputStream).MaybeComma().MaybeRightBracket().NoElse();
+                labelList.add(label);
+                if (i == '}') {
+                    break;
+                }
+            }
+        }
+        parseOneChar(inputStream).MaybeSpace().NoElse();
+
+        MetricFamily.Counter counter = new MetricFamily.Counter();
+        i = parseOneWord(inputStream, stringBuilder).MaybeSpace().MaybeEOL().NoElse();
+        counter.setValue(parseDouble(stringBuilder.toString()));
+        stringBuilder.delete(0, stringBuilder.length());
+        metric.setCounter(counter);
+
+        if (i == ' ') {
+            parseOneWord(inputStream, stringBuilder).MaybeEOL().NoElse();
+            metric.setTimestampMs(Long.parseLong(stringBuilder.toString()));
+        }
+
+        metricFamily.getMetricList().add(metric);
     }
 
     private static void parse_counter(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
@@ -404,7 +446,6 @@ public class PrometheusUtil {
 
         metricFamily.getMetricList().add(metric);
     }
-
 
     private static void parse_gauge(InputStream inputStream, MetricFamily metricFamily, StringBuilder stringBuilder) throws IOException, FormatException {
         MetricFamily.Metric metric = new MetricFamily.Metric();
